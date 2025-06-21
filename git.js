@@ -1,6 +1,7 @@
 const fs = require("fs");
 
 const ROOT_DIR = "./.gitClone";
+const HASH_LENGTH = 32;
 function Git() {
   this.__dirname = process.cwd();
   this.DEFAULT_BRANCH = "main";
@@ -26,6 +27,21 @@ Git.prototype.init = function init() {
 Git.prototype.getHeadRefStr = function (branch) {
   return `ref: refs/heads/${branch}`;
 };
+
+function createObject(id, content) {
+  const objectPath =
+    ROOT_DIR + `/objects/${id.slice(0, 2)}/${id.slice(2, HASH_LENGTH)}`;
+
+  if (!fs.existsSync(ROOT_DIR + `/objects/${id.slice(0, 2)}`)) {
+    fs.mkdirSync(ROOT_DIR + `/objects/${id.slice(0, 2)}`);
+  }
+
+  fs.writeFile(objectPath, content, (err) => {
+    if (err) {
+      throw err;
+    }
+  });
+}
 
 Git.prototype.add = async function (path) {
   if (!path) {
@@ -53,19 +69,8 @@ Git.prototype.add = async function (path) {
     } else if (hashFromIndex !== hashedContent) {
       indexContent = indexContent.replace(hashFromIndex, hashedContent);
     }
-    const objectPath =
-      ROOT_DIR +
-      `/objects/${hashedContent.slice(0, 2)}/${hashedContent.slice(2, 16)}`;
 
-    if (!fs.existsSync(ROOT_DIR + `/objects/${hashedContent.slice(0, 2)}`)) {
-      fs.mkdirSync(ROOT_DIR + `/objects/${hashedContent.slice(0, 2)}`);
-    }
-
-    fs.writeFile(objectPath, fileContent, (err) => {
-      if (err) {
-        throw err;
-      }
-    });
+    createObject(hashedContent, fileContent);
   };
 
   if (isFile) {
@@ -83,7 +88,79 @@ Git.prototype.hashContent = function (content) {
   for (let i = 0; i < content.length; i++) {
     key += content.charCodeAt(i).toString(16);
   }
-  return (key + "0000").slice(0, 16);
+  return (key + "0000").slice(0, HASH_LENGTH);
+};
+
+function getCurrentCommit() {
+  const headContent = fs.readFileSync(ROOT_DIR + "/HEAD", "utf8");
+  const isDetachedHead = headContent?.indexOf("ref") === -1;
+  const refLink = ROOT_DIR + "/" + headContent.split(" ")[1];
+
+  const currentCommit =
+    (isDetachedHead
+      ? headContent
+      : fs.existsSync(refLink)
+      ? fs.readFileSync(refLink)
+      : null) ?? null;
+
+  return currentCommit;
+}
+
+Git.prototype.commit = function (flag, message) {
+  const headContent = fs.readFileSync(ROOT_DIR + "/HEAD", "utf8");
+  const isDetachedHead = headContent?.indexOf("ref") === -1;
+  const refLink = ROOT_DIR + "/" + headContent.split(" ")[1];
+
+  const parentCommit = getCurrentCommit();
+
+  const commitContent = `${message}\n${
+    parentCommit ? `parent:${parentCommit}` : ""
+  }`;
+  const commitId = this.hashContent(commitContent);
+
+  fs.writeFile(
+    isDetachedHead ? ROOT_DIR + "/HEAD" : refLink,
+    commitId,
+    (err) => {
+      if (err) {
+        throw err;
+      }
+    }
+  );
+
+  createObject(commitId, commitContent);
+};
+
+function catFile(hashId) {
+  const uri =
+    ROOT_DIR +
+    "/objects/" +
+    hashId.slice(0, 2) +
+    "/" +
+    hashId.slice(2, HASH_LENGTH);
+  return fs.existsSync(uri) ? fs.readFileSync(uri, "utf8") : null;
+}
+
+Git.prototype["cat-file"] = function (hashId) {
+  console.log(catFile(hashId));
+};
+
+function gitLog(commitId) {
+  let currentCommit = commitId ?? getCurrentCommit();
+  if (currentCommit) {
+    console.log(`commit: ${currentCommit}`);
+    const content = catFile(currentCommit);
+    const [message, ...parent] = content.split("\n");
+    console.log(message);
+    console.log("\n");
+    parent?.forEach((p) => {
+      gitLog(p.split(":")[1]);
+    });
+  }
+}
+
+Git.prototype.log = function (commitId) {
+  gitLog();
 };
 
 (function main() {
