@@ -13,6 +13,23 @@ const hashContent = function (content) {
   for (let i = 0; i < content.length; i++) {
     key += content.charCodeAt(i).toString(16);
   }
+  while (key.length > HASH_LENGTH) {
+    // const firstHalf = key.slice(0, Math.floor(key.length - 1) / 2);
+    // const secondHalf = key.slice(Math.ceil(key.length - 1) / 2, key.length);
+
+    // key = (
+    //   BigInt(parseInt(firstHalf, 16)) + BigInt(parseInt(secondHalf, 16))
+    // ).toString(16);
+    let tempKey = "";
+    for (let i = 0; i < key.length; i += 4) {
+      let sum = 0;
+      for (let j = 0; j < 4; j++) {
+        sum += parseInt(key[i + j] ?? 0, 16);
+      }
+      tempKey += sum.toString(16);
+    }
+    key = tempKey;
+  }
   return (key + "0000").slice(0, HASH_LENGTH);
 };
 
@@ -28,14 +45,14 @@ Git.prototype.init = function init() {
     }
   });
 
-  fs.writeFileSync(ROOT_DIR + "/HEAD", this.getHeadRefStr(this.DEFAULT_BRANCH));
+  fs.writeFileSync(ROOT_DIR + "/HEAD", getHeadRefStr(this.DEFAULT_BRANCH));
 
   console.log(`Initialized empty repository in ${this.__dirname + ROOT_DIR}`);
 };
 
-Git.prototype.getHeadRefStr = function (branch) {
+function getHeadRefStr(branch) {
   return `ref: refs/heads/${branch}`;
-};
+}
 
 function createObject(id, content) {
   const objectPath =
@@ -92,10 +109,11 @@ Git.prototype.add = async function (path) {
   fs.writeFileSync(pathToIndex, indexContent);
 };
 
-function getCurrentCommit() {
+function getCurrentCommitID() {
   const headContent = fs.readFileSync(path.join(ROOT_DIR, "HEAD"), "utf8");
   const isDetachedHead = headContent?.indexOf("ref") === -1;
-  const refLink = path.join(ROOT_DIR, headContent.split(" ")[1]);
+  const refLink =
+    !isDetachedHead && path.join(ROOT_DIR, headContent.split(" ")[1]);
 
   const currentCommit =
     (isDetachedHead
@@ -126,6 +144,7 @@ const createDirectoryTree = (rootPath) => {
   });
 
   const rootHash = hashContent(rootContent);
+  console.log(rootHash, rootContent);
 
   createObject(rootHash, rootContent);
 
@@ -135,13 +154,14 @@ const createDirectoryTree = (rootPath) => {
 Git.prototype.commit = function (_flag, message) {
   const headContent = fs.readFileSync(ROOT_DIR + "/HEAD", "utf8");
   const isDetachedHead = headContent?.indexOf("ref") === -1;
-  const refLink = ROOT_DIR + "/" + headContent.split(" ")[1];
+  const refLink =
+    !isDetachedHead && path.join(ROOT_DIR, headContent.split(" ")[1]);
 
   // create root tree
 
   const rootHash = createDirectoryTree(this.__dirname);
 
-  const parentCommit = getCurrentCommit();
+  const parentCommit = getCurrentCommitID();
 
   const commitContent = `${message}\n${
     parentCommit ? `parent:${parentCommit}` : ""
@@ -169,13 +189,17 @@ Git.prototype.commit = function (_flag, message) {
   console.log("created new commit: ", commitId);
 };
 
-function catFile(hashId) {
-  const uri = path.join(
+function getObjectPath(hashID) {
+  return path.join(
     ROOT_DIR,
     "objects",
-    hashId.slice(0, 2),
-    hashId.slice(2, HASH_LENGTH)
+    hashID.slice(0, 2),
+    hashID.slice(2, HASH_LENGTH)
   );
+}
+
+function catFile(hashId) {
+  const uri = getObjectPath(hashId);
   return fs.existsSync(uri) ? fs.readFileSync(uri, "utf8") : null;
 }
 
@@ -184,7 +208,7 @@ Git.prototype["cat-file"] = function (hashId) {
 };
 
 function gitLog(commitId) {
-  let currentCommit = commitId ?? getCurrentCommit();
+  let currentCommit = commitId ?? getCurrentCommitID();
   if (currentCommit) {
     console.log(`commit: ${currentCommit}`);
     const content = catFile(currentCommit);
@@ -196,6 +220,67 @@ function gitLog(commitId) {
     });
   }
 }
+
+function branchExists(branchName) {
+  return fs.existsSync(path.join(ROOT_DIR, "refs", "heads", branchName));
+}
+
+function getRootTreeFromCommitID(commitId) {
+  const content = fs.existsSync(getObjectPath(commitId))
+    ? fs.readFileSync(getObjectPath(commitId), "utf-8")
+    : null;
+
+  if (content) {
+    return content
+      .split("\n")
+      .find((item) => item.includes("tree"))
+      ?.split(":")?.[1];
+  }
+}
+
+function createDirectoryMap(hashId) {
+  return catFile(hashId)
+    ?.split("\n")
+    ?.reduce((acc, file) => {
+      const [type, hash, name] = file.split(":");
+      if (type && hash && name) {
+        Object.assign(acc, { [name]: { hash, type } });
+      }
+      return acc;
+    }, {});
+}
+
+function updateFiles(sourceTree, targetTree) {
+  if (sourceTree === targetTree) {
+    return;
+  }
+
+  const sourceMap = createDirectoryMap(sourceTree);
+  /// Todo: update source with target
+}
+
+Git.prototype.checkout = function (target) {
+  const currentCommit = getCurrentCommitID();
+  let targetCommit;
+  const isCommit = catFile(target);
+  if (isCommit !== null) {
+    fs.writeFileSync(path.join(ROOT_DIR, "HEAD"), target);
+    targetCommit = target;
+    console.log("Git is now in DETACHED HEAD mode.");
+  } else if (branchExists(target)) {
+    fs.writeFileSync(path.join(ROOT_DIR, "HEAD"), getHeadRefStr(target));
+    targetCommit = fs.readFileSync(
+      path.join(ROOT_DIR, "refs", "heads", target),
+      "utf8"
+    );
+    console.log("switched to branch: " + target);
+  } else {
+    console.log("branch does not exists.");
+  }
+  const currentTree = getRootTreeFromCommitID(currentCommit);
+  const targetTree = getRootTreeFromCommitID(targetCommit);
+  updateFiles(currentTree, targetTree);
+};
 
 Git.prototype.log = function (commitId) {
   gitLog();
