@@ -1,4 +1,5 @@
 const fs = require("fs");
+const path = require("path");
 
 const ROOT_DIR = "./.gitClone";
 const HASH_LENGTH = 32;
@@ -6,6 +7,14 @@ function Git() {
   this.__dirname = process.cwd();
   this.DEFAULT_BRANCH = "main";
 }
+
+const hashContent = function (content) {
+  let key = "";
+  for (let i = 0; i < content.length; i++) {
+    key += content.charCodeAt(i).toString(16);
+  }
+  return (key + "0000").slice(0, HASH_LENGTH);
+};
 
 Git.prototype.init = function init() {
   if (!fs.existsSync(ROOT_DIR)) {
@@ -56,7 +65,7 @@ Git.prototype.add = async function (path) {
 
   const addFile = (pathToFile) => {
     const fileContent = fs.readFileSync(pathToFile, "utf8");
-    const hashedContent = this.hashContent(fileContent);
+    const hashedContent = hashContent(fileContent);
     const hashFromIndex = indexContent
       .split("\n")
       .find((entry) => entry.includes(pathToFile))
@@ -83,40 +92,67 @@ Git.prototype.add = async function (path) {
   fs.writeFileSync(pathToIndex, indexContent);
 };
 
-Git.prototype.hashContent = function (content) {
-  let key = "";
-  for (let i = 0; i < content.length; i++) {
-    key += content.charCodeAt(i).toString(16);
-  }
-  return (key + "0000").slice(0, HASH_LENGTH);
-};
-
 function getCurrentCommit() {
-  const headContent = fs.readFileSync(ROOT_DIR + "/HEAD", "utf8");
+  const headContent = fs.readFileSync(path.join(ROOT_DIR, "HEAD"), "utf8");
   const isDetachedHead = headContent?.indexOf("ref") === -1;
-  const refLink = ROOT_DIR + "/" + headContent.split(" ")[1];
+  const refLink = path.join(ROOT_DIR, headContent.split(" ")[1]);
 
   const currentCommit =
     (isDetachedHead
       ? headContent
       : fs.existsSync(refLink)
-      ? fs.readFileSync(refLink)
+      ? fs.readFileSync(refLink, "utf-8")
       : null) ?? null;
 
   return currentCommit;
 }
 
-Git.prototype.commit = function (flag, message) {
+const createDirectoryTree = (rootPath) => {
+  let rootContent = "";
+
+  fs.readdirSync(rootPath).forEach((item) => {
+    if (item === ".gitClone") {
+      return;
+    }
+    const itemPath = path.join(rootPath, item);
+    const stats = fs.statSync(itemPath);
+    if (stats.isFile()) {
+      const hashFile = hashContent(fs.readFileSync(itemPath, "utf-8"));
+      rootContent += `\nblob:${hashFile}:${item}`;
+    } else {
+      const hashDir = createDirectoryTree(itemPath);
+      rootContent += `\ntree:${hashDir}:${item}`;
+    }
+  });
+
+  const rootHash = hashContent(rootContent);
+
+  createObject(rootHash, rootContent);
+
+  return rootHash;
+};
+
+Git.prototype.commit = function (_flag, message) {
   const headContent = fs.readFileSync(ROOT_DIR + "/HEAD", "utf8");
   const isDetachedHead = headContent?.indexOf("ref") === -1;
   const refLink = ROOT_DIR + "/" + headContent.split(" ")[1];
+
+  // create root tree
+
+  const rootHash = createDirectoryTree(this.__dirname);
 
   const parentCommit = getCurrentCommit();
 
   const commitContent = `${message}\n${
     parentCommit ? `parent:${parentCommit}` : ""
-  }`;
-  const commitId = this.hashContent(commitContent);
+  }\ntree:${rootHash}`;
+
+  const commitId = hashContent(commitContent);
+
+  if (commitId === parentCommit) {
+    console.log("Nothing to commit");
+    return;
+  }
 
   fs.writeFile(
     isDetachedHead ? ROOT_DIR + "/HEAD" : refLink,
@@ -129,15 +165,17 @@ Git.prototype.commit = function (flag, message) {
   );
 
   createObject(commitId, commitContent);
+
+  console.log("created new commit: ", commitId);
 };
 
 function catFile(hashId) {
-  const uri =
-    ROOT_DIR +
-    "/objects/" +
-    hashId.slice(0, 2) +
-    "/" +
-    hashId.slice(2, HASH_LENGTH);
+  const uri = path.join(
+    ROOT_DIR,
+    "objects",
+    hashId.slice(0, 2),
+    hashId.slice(2, HASH_LENGTH)
+  );
   return fs.existsSync(uri) ? fs.readFileSync(uri, "utf8") : null;
 }
 
